@@ -3,13 +3,13 @@ on:
   pull_request: {}
   push:
     branches:
-    - main
-    - master
+      - main
+      - master
     paths:
-    - .github/workflows/semgrep.yml
+      - .github/workflows/semgrep.yml
   schedule:
-  # random HH:MM to avoid a load spike on GitHub Actions at 00:00
-  - cron: 33 12 * * *
+    - cron: "33 12 * * *"
+
 name: Semgrep
 jobs:
   semgrep:
@@ -19,8 +19,76 @@ jobs:
       contents: read
     env:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
     container:
       image: semgrep/semgrep
+
     steps:
-    - uses: actions/checkout@v4
-    - run: semgrep ci
+      - uses: actions/checkout@v4
+
+      # Store useful GitHub vars
+      - name: Set GitHub Metadata
+        run: |
+          echo "REPO=${GITHUB_REPOSITORY}" >> $GITHUB_ENV
+          echo "BRANCH=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+
+      # Run Semgrep and capture JSON output
+      - name: Run Semgrep
+        run: |
+          semgrep ci --json > semgrep-results.json || true
+
+      # Send summary + full details to Discord
+      - name: Send Semgrep Report to Discord
+        run: |
+          WEBHOOK="${{ secrets.DISCORD_WEBHOOK_URL }}"
+
+          COUNT=$(jq '.results | length' semgrep-results.json)
+
+          SUMMARY="📢 **Semgrep Scan Completed**\n🔍 **Total Findings:** ${COUNT}"
+
+          # Send summary
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d "{\"content\": \"${SUMMARY}\"}" \
+            "$WEBHOOK"
+
+
+          # If no results, send success message
+          if [ "$COUNT" -eq 0 ]; then
+            curl -X POST -H "Content-Type: application/json" \
+              -d "{\"content\": \"✅ No vulnerabilities found\"}" \
+              "$WEBHOOK"
+            exit 0
+          fi
+
+          # Build detailed block per vulnerability
+          DETAILS=$(jq -r --arg repo "$REPO" --arg branch "$BRANCH" '
+            .results[] |
+            (
+              "**Rule:** \(.check_id)" +
+              (if .extra.metadata.cwe then "\n**CWE:** \(.extra.metadata.cwe)" else "" end) +
+              (if .extra.metadata.cve then "\n**CVE:** \(.extra.metadata.cve)" else "" end) +
+              "\n**File:** [\(.path)](https://github.com/" + $repo + "/blob/" + $branch + "/\(.path)#L\(.start.line))" +
+              "\n**Line:** \(.start.line)" +
+              "\n**Message:** \(.extra.message)\n---"
+            )
+          ' semgrep-results.json)
+
+          # Split Discord messages (2000 char limit)
+          chunk=""
+          while IFS= read -r line; do
+            if [ ${#chunk} -ge 1800 ]; then
+              curl -X POST -H "Content-Type: application/json" \
+                -d "{\"content\": \"${chunk}\"}" \
+                "$WEBHOOK"
+              chunk=""
+            fi
+            chunk="${chunk}${line}\n"
+          done <<< "$DETAILS"
+
+          # Send last chunk
+          if [ -n "$chunk" ]; then
+            curl -X POST -H "Content-Type: application/json" \
+              -d "{\"content\": \"${chunk}\"}" \
+              "$WEBHOOK"
+          fi
