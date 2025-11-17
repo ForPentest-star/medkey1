@@ -2,11 +2,9 @@ name: Semgrep Scan
 
 on:
   push:
-    branches:
-      - "**"
+    branches: ["**"]
   pull_request:
-    branches:
-      - "**"
+    branches: ["**"]
 
 jobs:
   semgrep:
@@ -16,6 +14,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run Semgrep
-        run: |
-          semgrep --config p/ci --error
+      - name: Run Semgrep (official action)
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: p/ci
